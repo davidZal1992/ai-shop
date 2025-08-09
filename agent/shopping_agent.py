@@ -9,7 +9,7 @@ import json
 
 from langchain.tools import BaseTool
 from langchain.agents import create_openai_tools_agent, AgentExecutor
-from langchain_openai import ChatOpenAI
+from langchain.chat_models import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.callbacks import CallbackManagerForToolRun
 
@@ -54,7 +54,7 @@ class ParseShoppingListInput(BaseModel):
 
 class ParseShoppingListTool(BaseTool):
     """Tool to parse Hebrew shopping list into structured items"""
-    name = "parse_shopping_list"
+    name: str = "parse_shopping_list"
     description = """
     Parse a Hebrew shopping list into structured JSON objects.
     Each item will be analyzed for:
@@ -608,8 +608,20 @@ def main():
     search_term = "מלפפון"
     print(f"\n🔍 Testing search for: {search_term}")
     print("-" * 30)
-    
-    result = agent.search_product(search_term)
+    shopping_text = """
+מלפפון 2 קילו
+עגבניות שרי תמיר 1 קג
+מעדני חלבון גו עדיפות למנגו אם אין אז וניל
+מגבונים בייביסיטר ללא בישום 4
+פסטרמה במשקל על גחלים 350 גרם
+בשר טחון חצי קילו
+חזה עוף שלם 2 קילו
+חזה עוף שניצל קילו
+סלמון טרי 1 קילו
+"""
+
+    result = agent.process_shopping_list(shopping_text)
+
     print("\n📊 AGENT RESPONSE:")
     print(result)
     

@@ -20,15 +20,6 @@ playwright install chromium
 # Create environment file template
 echo "⚙️ Creating environment file template..."
 cat > .env << 'ENVEOF'
-# OpenAI API Configuration
-OPENAI_API_KEY=your_openai_api_key_here
-
-# Crawler Server Configuration
-CRAWLER_SERVER_URL=http://localhost:8000
-
-# Optional: Logging Level
-LOG_LEVEL=INFO
-ENVEOF
 
 echo "✅ Setup complete!"
 echo ""

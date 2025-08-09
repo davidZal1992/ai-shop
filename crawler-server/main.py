@@ -389,276 +389,96 @@ async def root():
     }
 
 @app.post("/search", response_model=SearchResponse)
-async def search_shufersal(request: SearchRequest):
+async def search_shufersal(request: SearchRequest, visible: bool = False):
     """
-    Simple step 1: Navigate to Shufersal, search, and get content
+    Navigate to Shufersal, search for a term, scroll, and return products
     """
-    logger.info(f"🔍 Step 1: Simple search for '{request.search_term}'")
-    
     try:
-        # Get browser and create page
-        browser_instance = await get_browser()
-        page = await browser_instance.new_page()
-        logger.info("✅ Browser page created (headless mode)")
-        
-        # Step 1: Navigate to Shufersal
-        await page.goto("https://www.shufersal.co.il/online", timeout=30000)
-        logger.info("✅ Navigated to Shufersal")
-        
-        # Step 2: Find search selector
-        search_selector = 'input[placeholder*="חיפוש פריט, קטגוריה או מותג"]'
-        await page.wait_for_selector(search_selector, timeout=10000)
-        logger.info("✅ Found search input")
-        
-        # Step 3: Put the search term
-        await page.fill(search_selector, request.search_term)
-        logger.info(f"✅ Filled search term: '{request.search_term}'")
-        
-        # Step 4: Click search (press Enter)
-        await page.press(search_selector, 'Enter')
-        logger.info("✅ Clicked search")
-        
-        # # Step 5: Wait a bit for results
-        # await page.wait_for_timeout(3000)  # Wait 3 seconds for initial results
-        # logger.info("✅ Waited for initial results")
-        
-        # Step 6: Scroll 5 times to load more products
-        logger.info("🔄 Step 3: Scrolling 5 times to load more products...")
-        for scroll_num in range(5):
-            logger.info(f"📜 Scroll {scroll_num + 1}/5")
-            
-            # Count products before scroll
-            products_before = await page.query_selector_all('li.SEARCH.tileBlock')
-            count_before = len(products_before)
-            
-            # Scroll to bottom
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            
-            # Wait for new products to load
-            await page.wait_for_timeout(2000)
-            
-            # Count products after scroll
-            products_after = await page.query_selector_all('li.SEARCH.tileBlock')
-            count_after = len(products_after)
-            
-            logger.info(f"✅ Scroll {scroll_num + 1}: {count_before} → {count_after} products")
-            
-            # If no new products loaded, break early
-            if count_after == count_before:
-                logger.info(f"🛑 No new products after scroll {scroll_num + 1}, stopping")
-                break
-        
-        # Step 7: Get final content after all scrolls
-        content = await page.content()
-        search_url = page.url
-        logger.info(f"✅ Got final content: {len(content)} characters")
-        logger.info(f"✅ Search URL: {search_url}")
-        
-        # Step 8: Parse the content to extract products
-        logger.info("🔍 Step 4: Parsing final content for products...")
-        products = parse_shufersal_products(content, "https://www.shufersal.co.il")
-        logger.info(f"✅ Parsed {len(products)} products from final content")
-        
-        # Return response with parsed products
-        return SearchResponse(
-            success=True,
-            search_term=request.search_term,
-            products=products,
-            total_found=len(products),
-            search_url=search_url,
-            metadata={
-                "content_length": len(content),
-                "step": "2 - Search and parsing completed"
-            }
-        )
-        
+        async with async_playwright() as p:
+            logger.info("🚀 Launching browser...")
+            browser = await p.chromium.launch(
+                headless=not visible,  # visible=False means headless
+                slow_mo=500 if visible else 0,
+                channel="chrome",      # use system Chrome
+                args=['--no-sandbox', '--start-maximized']
+            )
+            page = await browser.new_page()
+            logger.info("✅ Browser page created")
+
+            # Step 1: Navigate to Shufersal
+            await page.goto("https://www.shufersal.co.il/online", timeout=30000)
+            logger.info("✅ Navigated to Shufersal")
+
+            # Step 2: Find search selector
+            search_selector = 'input[placeholder*="חיפוש פריט, קטגוריה או מותג"]'
+            await page.wait_for_selector(search_selector, timeout=10000)
+            logger.info("✅ Found search input")
+
+            # Step 3: Put the search term
+            await page.fill(search_selector, request.search_term)
+            logger.info(f"✅ Filled search term: '{request.search_term}'")
+
+            # Step 4: Click search (press Enter)
+            await page.press(search_selector, 'Enter')
+            logger.info("✅ Clicked search")
+
+            # Step 5: Scroll to load more products
+            total_scrolls = 5  # minimum scroll count
+            logger.info(f"🔄 Scrolling {total_scrolls} times to load more products...")
+            for scroll_num in range(total_scrolls):
+                logger.info(f"📜 Scroll {scroll_num + 1}/{total_scrolls}")
+
+                # Count before scroll
+                products_before = await page.query_selector_all('li.SEARCH.tileBlock')
+                count_before = len(products_before)
+
+                # Scroll down
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+
+                # Wait for content to load
+                await page.wait_for_timeout(2500)
+
+                # Count after scroll
+                products_after = await page.query_selector_all('li.SEARCH.tileBlock')
+                count_after = len(products_after)
+
+                logger.info(f"✅ Scroll {scroll_num + 1}: {count_before} → {count_after} products")
+
+                # Optional: Stop early if no new products appear
+                if count_after == count_before:
+                    logger.info(f"🛑 No new products after scroll {scroll_num + 1}, stopping")
+                    break
+
+            # Step 6: Parse products
+            content = await page.content()
+            search_url = page.url
+            products = parse_shufersal_products(content, "https://www.shufersal.co.il")
+
+            # Close browser
+            await browser.close()
+
+            return SearchResponse(
+                success=True,
+                search_term=request.search_term,
+                products=products,
+                total_found=len(products),
+                search_url=search_url,
+                metadata={
+                    "content_length": len(content),
+                    "step": "Search and parsing completed"
+                }
+            )
+
     except Exception as e:
-        logger.error(f"❌ Step 1 failed: {e}")
+        logger.error(f"❌ Search failed: {e}")
         return SearchResponse(
             success=False,
             search_term=request.search_term,
             products=[],
             total_found=0,
             search_url="",
-            error=f"Step 1 failed: {str(e)}"
-        )
-    finally:
-        # Always cleanup page (but keep browser for reuse)
-        try:
-            if page:
-                await page.close()
-                logger.debug("🔒 Page closed")
-        except Exception as cleanup_error:
-            logger.debug(f"⚠️ Error closing page: {cleanup_error}")    
-
-    """Simple test to check if browser window is visible"""
-    playwright_instance = None
-    browser = None
-    page = None
-    
-    try:
-        logger.info("🧪 TESTING BROWSER VISIBILITY...")
-        playwright_instance = await async_playwright().start()
-        
-        logger.info("🚀 Launching VISIBLE Chrome browser (using system Chrome)...")
-        browser = await playwright_instance.chromium.launch(
-            headless=False,
-            slow_mo=2000,  # Very slow for visibility
-            channel="chrome",  # Use system Chrome instead of Chromium
-            args=['--no-sandbox', '--start-maximized']
-        )
-        
-        page = await browser.new_page()
-        logger.info("📄 Opening Google for 15 seconds...")
-        
-        await page.goto("https://www.google.com")
-        await page.wait_for_timeout(15000)  # Keep open for 15 seconds
-        
-        logger.info("✅ Browser visibility test completed!")
-        
-        return {
-            "success": True,
-            "message": "Browser should have been visible for 15 seconds showing Google",
-            "instructions": "Check if you saw a Chrome window open with Google"
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Browser visibility test failed: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "message": "Browser visibility test failed"
-        }
-    finally:
-        try:
-            if page: await page.close()
-            if browser: await browser.close()
-            if playwright_instance: await playwright_instance.stop()
-        except:
-            pass
-
-    """Add to cart using a completely fresh browser instance"""
-    logger.info(f"🛒 Fresh add to cart: {request.product_name} x{request.quantity}")
-    
-    playwright_instance = None
-    browser = None
-    page = None
-    
-    try:
-        # Create completely fresh instances
-        logger.info("🚀 Creating fresh Playwright instance...")
-        playwright_instance = await async_playwright().start()
-        
-        logger.info("🚀 Launching VISIBLE Chrome browser (using system Chrome)...")
-        browser = await playwright_instance.chromium.launch(
-            headless=False,  # Make visible for testing
-            slow_mo=1000,   # Slow down actions so you can see them
-            channel="chrome",  # Use system Chrome instead of Chromium
-            args=['--no-sandbox', '--start-maximized']  # Start maximized for better visibility
-        )
-        logger.info("✅ Browser launched successfully - you should see a Chrome window!")
-        
-        page = await browser.new_page()
-        logger.info("📄 New page created - browser should be visible now!")
-        
-        # Navigate to search results or search page
-        if request.search_url:
-            await page.goto(request.search_url)
-            await page.wait_for_timeout(3000)
-            logger.info(f"✅ Loaded search results from URL")
-        else:
-            # Go to Shufersal and search
-            await page.goto("https://www.shufersal.co.il/online/he/")
-            await page.wait_for_selector('input[placeholder*="חיפוש"]', timeout=10000)
-            await page.fill('input[placeholder*="חיפוש"]', request.product_name)
-            await page.press('input[placeholder*="חיפוש"]', 'Enter')
-            await page.wait_for_timeout(3000)
-            logger.info(f"✅ Searched for product")
-        
-        # Find product by code
-        target_tile = await page.query_selector(f'li[data-product-code="{request.product_code}"]')
-        if not target_tile:
-            raise Exception(f"Product not found: {request.product_code}")
-        
-        logger.info(f"✅ Found product tile")
-        
-        # Set quantity
-        quantity_input = await target_tile.query_selector('input.js-qty-selector-input')
-        if quantity_input:
-            current_value = float(await quantity_input.get_attribute('value') or "0")
-            target_quantity = float(request.quantity)
-            
-            if target_quantity > current_value:
-                plus_button = await target_tile.query_selector('button.bootstrap-touchspin-up')
-                if plus_button:
-                    difference = target_quantity - current_value
-                    increment = float(await quantity_input.get_attribute('data-inc') or "1")
-                    clicks = int(round(difference / increment))
-                    for _ in range(clicks):
-                        await plus_button.click()
-                        await page.wait_for_timeout(200)
-                    logger.info(f"✅ Set quantity to {target_quantity}")
-        
-        # Click add to cart
-        add_button = await target_tile.query_selector('button.js-add-to-cart')
-        if add_button:
-            await add_button.click()
-            await page.wait_for_timeout(3000)
-            logger.info("✅ Clicked add to cart")
-            
-            # Check for update button
-            update_button = await target_tile.query_selector('button.js-update-cart')
-            success = update_button is not None
-            
-            if success:
-                logger.info("🎉 SUCCESS! Update button found")
-                
-                # Navigate to cart to show the result (for visible testing)
-                try:
-                    await page.goto("https://www.shufersal.co.il/online/he/cart")
-                    await page.wait_for_timeout(5000)  # Wait longer to see the cart
-                    logger.info("🛒 Navigated to cart page for verification")
-                    
-                    # Keep browser open for 15 seconds so user can see the result
-                    logger.info("⏰ Keeping browser open for 15 seconds so you can see the cart...")
-                    await page.wait_for_timeout(15000)
-                    
-                except Exception as cart_error:
-                    logger.warning(f"⚠️ Could not navigate to cart: {cart_error}")
-                    
-            else:
-                logger.warning("⚠️ Update button not found")
-            
-            return AddToCartResponse(
-                success=success,
-                product_code=request.product_code,
-                quantity=request.quantity,
-                message=f"{'Successfully added' if success else 'Attempted to add'} {request.quantity} x {request.product_name} to cart"
-            )
-        else:
-            raise Exception("Add to cart button not found")
-            
-    except Exception as e:
-        logger.error(f"❌ Fresh add to cart error: {e}")
-        return AddToCartResponse(
-            success=False,
-            product_code=request.product_code,
-            quantity=request.quantity,
-            message=f"Failed to add product to cart",
             error=str(e)
         )
-    finally:
-        # Always cleanup
-        try:
-            if page:
-                await page.close()
-            if browser:
-                await browser.close()
-            if playwright_instance:
-                await playwright_instance.stop()
-        except:
-            pass
-
 @app.get("/get-cart")
 async def get_cart():
     """Get current cart contents (headless)"""
