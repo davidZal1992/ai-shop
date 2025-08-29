@@ -146,6 +146,110 @@ async def search_product(page, product_name):
 
     return products
 
+async def search_single_product_in_tab(browser, product_name):
+    """
+    Search for a single product in a new tab and return candidates (no login needed)
+    """
+    page = await browser.new_page()
+    try:
+        # Navigate to main page (no login needed for search)
+        await page.goto("https://www.shufersal.co.il/online/he")
+        await page.wait_for_timeout(1000)
+        
+        # Search for the product
+        print(f"Searching for '{product_name}'...")
+        search_input = await page.wait_for_selector("#js-site-search-input", timeout=10000)
+        await search_input.fill(product_name)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(3000)
+        
+        # Extract candidates
+        candidates = await extract_search_results(page)
+        print(f"Found {len(candidates)} candidates for '{product_name}'")
+        
+        await page.close()
+        return {
+            "user_item": product_name,
+            "candidates": candidates
+        }
+        
+    except Exception as e:
+        print(f"Error searching for '{product_name}': {str(e)}")
+        await page.close()
+        return {
+            "user_item": product_name, 
+            "candidates": []
+        }
+
+async def search_in_tab(context, product_name):
+    """
+    Search for a single product in a new tab using browser context
+    """
+    page = await context.new_page()
+    try:
+        # Navigate to main page
+        await page.goto("https://www.shufersal.co.il/online/he")
+        await page.wait_for_timeout(1000)
+        
+        # Search for the product
+        print(f"Searching for '{product_name}'...")
+        search_input = await page.wait_for_selector("#js-site-search-input", timeout=10000)
+        await search_input.fill(product_name)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(3000)
+        
+        # Extract candidates
+        candidates = await extract_search_results(page)
+        print(f"Found {len(candidates)} candidates for '{product_name}'")
+        
+        await page.close()
+        return {
+            "user_item": product_name,
+            "candidates": candidates
+        }
+        
+    except Exception as e:
+        print(f"Error searching for '{product_name}': {str(e)}")
+        await page.close()
+        return {
+            "user_item": product_name, 
+            "candidates": []
+        }
+
+async def parallel_search_with_tabs(search_terms):
+    """
+    Run parallel searches for multiple products using ONE browser context with multiple tabs
+    """
+    print(f"Running parallel searches for: {search_terms}")
+    
+    async with async_playwright() as p:
+        # Create ONE browser instance with context
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context()
+        
+        try:
+            # Create tasks for parallel execution using tabs from the SAME context
+            tasks = [search_in_tab(context, term) for term in search_terms]
+            
+            # Run all searches in parallel
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Filter out any exceptions
+            candidate_lists = []
+            for result in results:
+                if isinstance(result, dict):
+                    candidate_lists.append(result)
+                else:
+                    print(f"Search error: {result}")
+            
+            await browser.close()
+            return candidate_lists
+            
+        except Exception as e:
+            print(f"Error in parallel search: {str(e)}")
+            await browser.close()
+            return []
+
 
 async def add_to_cart_with_quantity(page, product_code, quantity):
     """
@@ -169,41 +273,38 @@ async def add_to_cart_with_quantity(page, product_code, quantity):
 
 async def shopping_flow(username, password, items=None):
     """
-    Complete flow: login, search, and add to cart
+    Complete flow: search first, then login and add to cart
     """
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        page = await browser.new_page()
-        
-        try:
-            # Login
-            print("Logging in...")
+    try:
+        # Step 1: Parallel search using ONE browser with multiple tabs
+        search_terms = ["מלפפון", "ביסלי בצל"]
+
+        print("Starting parallel searches with single browser...")
+        candidate_lists = await parallel_search_with_tabs(search_terms)
+
+
+        # Step 2: Login in separate browser for cart operations
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=False)
+            page = await browser.new_page()
+            
+            print("\nLogging in for cart operations...")
             await login_to_shufersal(page, username, password)
             print("✅ Login successful")
-
-            # Search for מלפפון
-            print("Searching for מלפפון...")
-            await search_product(page, "מלפפון")
-            print("✅ Search completed")
-
-            # Add 4.5 kg to cart
-            print("Adding 4.5 kg מלפפון to cart...")
-            await add_to_cart_with_quantity(page, "P_46", 4.5)
-            print("✅ Added to cart")
-
-            await browser.close()
-            return {
-                "success": True,
-                "message": "Successfully added 4.5 kg מלפפון to cart"
-            }
             
-        except Exception as e:
-            print(f"❌ Error: {str(e)}")
             await browser.close()
-            return {
-                "success": False,
-                "message": f"Error: {str(e)}"
-            }
+
+        return {
+            "success": True,
+            "message": "Successfully completed search-first flow"
+        }
+        
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        return {
+            "success": False,
+            "message": f"Error: {str(e)}"
+        }
 
 
 async def main():
