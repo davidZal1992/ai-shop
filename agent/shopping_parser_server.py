@@ -98,56 +98,56 @@ async def parse_shopping_list(items_text: str) -> List[ShoppingItem]:
         raise HTTPException(status_code=500, detail=f"Failed to parse shopping list: {str(e)}")
 
 
-async def shop_with_parsed_items(username, password, items: List[ShoppingItem]):
-    """
-    Execute shopping automation with parsed items using the service
-    """
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        page = await browser.new_page()
-        
-        try:
-            # Login using the service
-            await login_to_shufersal(page, username, password)
-            print("✅ Login successful")
-            
-            # Process each item
-            for item in items:
-                print(f"Processing: {item.quantity} {item.unit} {item.product_name}")
-                
-                # Search for product using the service
-                search_term = f"{item.brand} {item.product_name}" if item.brand else item.product_name
-                await search_product(page, search_term)
-                print(f"✅ Searched for {search_term}")
-                
-                # Add to cart with quantity
-                try:
-                    # Set quantity first
-                    await page.fill("input.js-qty-selector-input", str(item.quantity))
-                    
-                    # Click add button
-                    try:
-                        await page.click('button:has-text("הוספה")', timeout=5000)
-                    except:
-                        await page.click('.js-add-to-cart', timeout=5000)
-                    
-                    await page.wait_for_timeout(2000)
-                    print(f"✅ Added {item.quantity} {item.unit} to cart")
-                except Exception as e:
-                    print(f"⚠️ Could not add to cart: {str(e)}")
-            
-            await browser.close()
-            return {
-                "success": True,
-                "message": f"Successfully processed {len(items)} items"
-            }
-            
-        except Exception as e:
-            await browser.close()
-            return {
-                "success": False,
-                "message": f"Error: {str(e)}"
-            }
+# async def shop_with_parsed_items(username, password, items: List[ShoppingItem]):
+#     """
+#     Execute shopping automation with parsed items using the service
+#     """
+#     async with async_playwright() as p:
+#         browser = await p.chromium.launch(headless=False)
+#         page = await browser.new_page()
+#
+#         try:
+#             # Login using the service
+#             await login_to_shufersal(page, username, password)
+#             print("✅ Login successful")
+#
+#             # Process each item
+#             for item in items:
+#                 print(f"Processing: {item.quantity} {item.unit} {item.product_name}")
+#
+#                 # Search for product using the service
+#                 search_term = f"{item.brand} {item.product_name}" if item.brand else item.product_name
+#                 await search_product(page, search_term)
+#                 print(f"✅ Searched for {search_term}")
+#
+#                 # Add to cart with quantity
+#                 try:
+#                     # Set quantity first
+#                     await page.fill("input.js-qty-selector-input", str(item.quantity))
+#
+#                     # Click add button
+#                     try:
+#                         await page.click('button:has-text("הוספה")', timeout=5000)
+#                     except:
+#                         await page.click('.js-add-to-cart', timeout=5000)
+#
+#                     await page.wait_for_timeout(2000)
+#                     print(f"✅ Added {item.quantity} {item.unit} to cart")
+#                 except Exception as e:
+#                     print(f"⚠️ Could not add to cart: {str(e)}")
+#
+#             await browser.close()
+#             return {
+#                 "success": True,
+#                 "message": f"Successfully processed {len(items)} items"
+#             }
+#
+#         except Exception as e:
+#             await browser.close()
+#             return {
+#                 "success": False,
+#                 "message": f"Error: {str(e)}"
+#             }
 
 @app.post("/shop")
 async def shop_endpoint(request: ShopRequest):

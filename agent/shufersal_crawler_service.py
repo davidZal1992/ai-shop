@@ -1,7 +1,12 @@
 import asyncio
 import json
+import openai
+import os
 from crawl4ai import AsyncWebCrawler
 from playwright.async_api import async_playwright
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 async def login_to_shufersal(page, username, password):
@@ -84,7 +89,8 @@ async def extract_product_details(product_element):
         # Extract promotion details (simple text only)
         promotion = None
         try:
-            promotion_element = await product_element.query_selector(".promotion-section .productInnerPromotion .subText strong")
+            promotion_element = await product_element.query_selector(
+                ".promotion-section .productInnerPromotion .subText strong")
             if promotion_element:
                 promotion = await promotion_element.inner_text()
         except:
@@ -146,6 +152,7 @@ async def search_product(page, product_name):
 
     return products
 
+
 async def search_single_product_in_tab(browser, product_name):
     """
     Search for a single product in a new tab and return candidates (no login needed)
@@ -155,31 +162,32 @@ async def search_single_product_in_tab(browser, product_name):
         # Navigate to main page (no login needed for search)
         await page.goto("https://www.shufersal.co.il/online/he")
         await page.wait_for_timeout(1000)
-        
+
         # Search for the product
         print(f"Searching for '{product_name}'...")
         search_input = await page.wait_for_selector("#js-site-search-input", timeout=10000)
         await search_input.fill(product_name)
         await page.keyboard.press("Enter")
         await page.wait_for_timeout(3000)
-        
+
         # Extract candidates
         candidates = await extract_search_results(page)
         print(f"Found {len(candidates)} candidates for '{product_name}'")
-        
+
         await page.close()
         return {
             "user_item": product_name,
             "candidates": candidates
         }
-        
+
     except Exception as e:
         print(f"Error searching for '{product_name}': {str(e)}")
         await page.close()
         return {
-            "user_item": product_name, 
+            "user_item": product_name,
             "candidates": []
         }
+
 
 async def search_in_tab(context, product_name):
     """
@@ -190,50 +198,51 @@ async def search_in_tab(context, product_name):
         # Navigate to main page
         await page.goto("https://www.shufersal.co.il/online/he")
         await page.wait_for_timeout(1000)
-        
+
         # Search for the product
         print(f"Searching for '{product_name}'...")
         search_input = await page.wait_for_selector("#js-site-search-input", timeout=10000)
         await search_input.fill(product_name)
         await page.keyboard.press("Enter")
         await page.wait_for_timeout(3000)
-        
+
         # Extract candidates
         candidates = await extract_search_results(page)
         print(f"Found {len(candidates)} candidates for '{product_name}'")
-        
+
         await page.close()
         return {
             "user_item": product_name,
             "candidates": candidates
         }
-        
+
     except Exception as e:
         print(f"Error searching for '{product_name}': {str(e)}")
         await page.close()
         return {
-            "user_item": product_name, 
+            "user_item": product_name,
             "candidates": []
         }
+
 
 async def parallel_search_with_tabs(search_terms):
     """
     Run parallel searches for multiple products using ONE browser context with multiple tabs
     """
     print(f"Running parallel searches for: {search_terms}")
-    
+
     async with async_playwright() as p:
         # Create ONE browser instance with context
         browser = await p.chromium.launch(headless=False)
         context = await browser.new_context()
-        
+
         try:
             # Create tasks for parallel execution using tabs from the SAME context
             tasks = [search_in_tab(context, term) for term in search_terms]
-            
+
             # Run all searches in parallel
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             # Filter out any exceptions
             candidate_lists = []
             for result in results:
@@ -241,14 +250,99 @@ async def parallel_search_with_tabs(search_terms):
                     candidate_lists.append(result)
                 else:
                     print(f"Search error: {result}")
-            
+
             await browser.close()
             return candidate_lists
-            
+
         except Exception as e:
             print(f"Error in parallel search: {str(e)}")
             await browser.close()
             return []
+
+
+async def find_best_matches_with_llm(candidate_lists):
+    """
+    Use LLM to find the best product matches from candidate lists
+    """
+    try:
+        client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        # Create the prompt
+        prompt = """You are an expert shopping assistant for an Israeli supermarket (Shufersal). Your task is to find the best product matches from search results.
+
+MATCHING RULES:
+1. **Name Match**: Find the most exact name match first
+2. **Brand Match**: If user specifies a brand, prioritize that exact brand
+3. **Preferences**: Consider specific user preferences (taste, organic, low-fat, etc.)
+4. **Smart Promotions**: ALWAYS consider promotions and be smart about quantities:
+   - "2 יח' ב- 30 ₪" = Buy 2 units for 30₪ → choose quantity 2
+   - "3 ב- 45 ₪" = Buy 3 for 45₪ → choose quantity 3  
+   - "קנה 2 קבל 1 חינם" = Buy 2 get 1 free → choose quantity 2
+   - If promotion offers better value, adjust quantity accordingly
+5. If you do not find a match, just set nulls and provide reason. 
+6. Some products they are unit in weight and not boxed that you can pick them physically. If user Asked for example גבינה צהובה במשקל you should take 
+in account the unit and understand that the item is not packed and this is item that we choose with weight.
+7. Consider take small products if user asked, for example שקית קטנה ביסלי if you have match for 2 items but the user asked for the smallest look at unit_size of the product.
+
+INPUT FORMAT:
+For each user item, you'll receive candidates with: name, brand, price, unit_size, promotion, product_code
+
+OUTPUT FORMAT:
+Return ONLY a JSON array with this exact structure:
+[
+  {
+    "user_item": "original search term",
+    "product_name": "exact product name from candidates",
+    "product_code": "exact product code",
+    "quantity": number (can be decimal like 0.5, 1.5, 2.5 - consider promotions!),
+    "reason": "brief explanation of choice and quantity reasoning"
+  }
+]
+
+EXAMPLES:
+- User searches "מלפפון חצי קילו" → Choose cucumber, quantity: 0.5 (half kilo). Convert it to correct number.
+- User searches "ביסלי בצל" → Choose Bissli onion flavor, consider promotions
+- If promotion is "2 יח' ב- 20 ₪" and regular price is 12₪ each → choose quantity 2 (saves 4₪)
+- User searches "חלב 2 ליטר" → Choose milk, quantity: 2.0 (two liters)
+
+BE SMART WITH PROMOTIONS - always calculate if the promotion quantity gives better value!
+
+Here are the candidates:
+"""
+
+        prompt += json.dumps(candidate_lists, ensure_ascii=False, indent=2)
+        
+        response = await client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "Find the best matches for each item, being smart about promotions and quantities."}
+            ]
+        )
+        
+        # Parse the response
+        matches_json = response.choices[0].message.content.strip()
+        if matches_json.startswith("```json"):
+            matches_json = matches_json.replace("```json", "").replace("```", "").strip()
+        
+        best_matches = json.loads(matches_json)
+        return best_matches
+        
+    except Exception as e:
+        print(f"Error in LLM matching: {str(e)}")
+        # Fallback: return first candidate for each item
+        fallback_matches = []
+        for item_data in candidate_lists:
+            if item_data['candidates']:
+                candidate = item_data['candidates'][0]
+                fallback_matches.append({
+                    "user_item": item_data['user_item'],
+                    "product_name": candidate['name'],
+                    "product_code": candidate['product_code'],
+                    "quantity": 1,
+                    "reason": "Fallback match (LLM failed)"
+                })
+        return fallback_matches
 
 
 async def add_to_cart_with_quantity(page, product_code, quantity):
@@ -271,34 +365,47 @@ async def add_to_cart_with_quantity(page, product_code, quantity):
     return True
 
 
+
 async def shopping_flow(username, password, items=None):
     """
     Complete flow: search first, then login and add to cart
     """
     try:
         # Step 1: Parallel search using ONE browser with multiple tabs
-        search_terms = ["מלפפון", "ביסלי בצל"]
+        search_terms = ["מלפפון חצי קילו", "ביסלי בצל מארז אחד"]
 
         print("Starting parallel searches with single browser...")
         candidate_lists = await parallel_search_with_tabs(search_terms)
-
+        
+        # Step 1.5: Use LLM to find best matches from candidates
+        best_matches = await find_best_matches_with_llm(candidate_lists)
+        print(f"\n=== LLM Best Matches ===")
+        for match in best_matches:
+            print(f"User item: {match['user_item']}")
+            print(f"Best match: {match['product_name']} ({match['product_code']}) - Quantity: {match['quantity']}")
+            print(f"Reason: {match.get('reason', 'N/A')}")
+            print()
 
         # Step 2: Login in separate browser for cart operations
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=False)
             page = await browser.new_page()
-            
+
             print("\nLogging in for cart operations...")
             await login_to_shufersal(page, username, password)
             print("✅ Login successful")
-            
-            await browser.close()
+
+            print("Adding 4.5 kg מלפפון to cart...")
+            await add_to_cart_with_quantity(page, "P_46", 4.5)
+            print("✅ Added to cart")
+
+        await browser.close()
 
         return {
             "success": True,
             "message": "Successfully completed search-first flow"
         }
-        
+
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         return {
