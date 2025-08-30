@@ -364,6 +364,81 @@ async def add_to_cart_with_quantity(page, product_code, quantity):
     await page.wait_for_timeout(2000)
     return True
 
+async def add_product_to_cart_in_tab(context, best_match):
+    """
+    Search for a specific product and add it to cart in a new tab
+    """
+    page = await context.new_page()
+    try:
+        # Navigate to main page
+        await page.goto("https://www.shufersal.co.il/online/he")
+        await page.wait_for_timeout(1000)
+        
+        # Search for the specific product
+        print(f"Searching for '{best_match['product_name']}'...")
+        search_input = await page.wait_for_selector("#js-site-search-input", timeout=10000)
+        await search_input.fill(best_match['product_name'])
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(3000)
+        
+        # Add to cart with quantity
+        print(f"Adding {best_match['quantity']} to cart...")
+        await page.fill("input.js-qty-selector-input", str(best_match['quantity']))
+        
+        # Click add to cart button for this specific product
+        try:
+            await page.click(f'li[data-product-code="{best_match["product_code"]}"] button.js-add-to-cart', timeout=5000)
+        except:
+            try:
+                await page.click('button:has-text("הוספה")', timeout=5000)
+            except:
+                await page.click('.js-add-to-cart', timeout=5000)
+        
+        await page.wait_for_timeout(2000)
+        print(f"✅ Added {best_match['product_name']} to cart")
+        
+        await page.close()
+        return {
+            "success": True,
+            "product": best_match['product_name'],
+            "quantity": best_match['quantity']
+        }
+        
+    except Exception as e:
+        print(f"Error adding {best_match['product_name']} to cart: {str(e)}")
+        await page.close()
+        return {
+            "success": False,
+            "product": best_match['product_name'],
+            "error": str(e)
+        }
+
+async def parallel_add_to_cart(context, best_matches):
+    """
+    Add all best matches to cart in parallel using multiple tabs
+    """
+    print(f"Adding {len(best_matches)} items to cart in parallel...")
+    
+    # Create tasks for parallel execution
+    tasks = [add_product_to_cart_in_tab(context, match) for match in best_matches]
+    
+    # Run all additions in parallel
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Process results
+    success_count = 0
+    for result in results:
+        if isinstance(result, dict) and result.get("success"):
+            success_count += 1
+        else:
+            print(f"Failed to add item: {result}")
+    
+    return {
+        "total_items": len(best_matches),
+        "successful_additions": success_count,
+        "results": results
+    }
+
 
 
 async def shopping_flow(username, password, items=None):
@@ -372,7 +447,7 @@ async def shopping_flow(username, password, items=None):
     """
     try:
         # Step 1: Parallel search using ONE browser with multiple tabs
-        search_terms = ["מלפפון חצי קילו", "ביסלי בצל מארז אחד"]
+        search_terms = ["מלפפון חצי קילו", "ביסלי בצל"]
 
         print("Starting parallel searches with single browser...")
         candidate_lists = await parallel_search_with_tabs(search_terms)
@@ -386,20 +461,38 @@ async def shopping_flow(username, password, items=None):
             print(f"Reason: {match.get('reason', 'N/A')}")
             print()
 
-        # Step 2: Login in separate browser for cart operations
+        # Step 2: Login and add all best matches to cart in parallel
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=False)
-            page = await browser.new_page()
+            context = await browser.new_context()
+            page = await context.new_page()
 
             print("\nLogging in for cart operations...")
             await login_to_shufersal(page, username, password)
             print("✅ Login successful")
+            
+            # Close login page, context will maintain session
+            await page.close()
 
-            print("Adding 4.5 kg מלפפון to cart...")
-            await add_to_cart_with_quantity(page, "P_46", 4.5)
-            print("✅ Added to cart")
+            print("\nAdding best matches to cart sequentially...")
+            cart_results = []
+            for match in best_matches:
+                print(f"Adding {match['product_name']} (quantity: {match['quantity']})...")
+                result = await add_product_to_cart_in_tab(context, match)
+                cart_results.append(result)
+            
+            # Count successes
+            success_count = sum(1 for r in cart_results if r.get("success"))
+            cart_summary = {
+                "total_items": len(best_matches),
+                "successful_additions": success_count,
+                "results": cart_results
+            }
+            
+            print(f"\n=== Cart Results ===")
+            print(f"Successfully added {success_count}/{len(best_matches)} items to cart")
 
-        await browser.close()
+            await browser.close()
 
         return {
             "success": True,
